@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -502,4 +503,5 @@ app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payment_success))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 print("Bot running...")
+asyncio.set_event_loop(asyncio.new_event_loop())
 app.run_polling()

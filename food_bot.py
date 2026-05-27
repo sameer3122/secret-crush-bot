@@ -317,6 +317,63 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"👥 Total users: *{count}*", parse_mode="Markdown")
 
 
+async def cmd_feature(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    # If ID provided directly: /feature 3
+    if context.args:
+        try:
+            rest_id = int(context.args[0])
+            with get_db() as conn:
+                rest = conn.execute(
+                    "SELECT * FROM restaurants WHERE id=?", (rest_id,)
+                ).fetchone()
+                if not rest:
+                    await update.message.reply_text("❌ Restaurant not found.")
+                    return
+                new_status = 0 if rest["is_featured"] else 1
+                conn.execute(
+                    "UPDATE restaurants SET is_featured=? WHERE id=?",
+                    (new_status, rest_id)
+                )
+            status_text = "⭐ FEATURED" if new_status else "📋 Basic"
+            await update.message.reply_text(
+                f"✅ *{rest['name']}* is now *{status_text}*",
+                parse_mode="Markdown"
+            )
+            return
+        except ValueError:
+            pass
+
+    # Show list to select
+    with get_db() as conn:
+        restaurants = conn.execute(
+            "SELECT id, name, is_featured FROM restaurants WHERE is_active=1"
+        ).fetchall()
+
+    if not restaurants:
+        await update.message.reply_text("No restaurants found.")
+        return
+
+    buttons = []
+    for r in restaurants:
+        star = "⭐" if r["is_featured"] else "📋"
+        buttons.append([InlineKeyboardButton(
+            f"{star} {r['name']}",
+            callback_data=f"toggle_feature_{r['id']}"
+        )])
+
+    await update.message.reply_text(
+        "⭐ *Toggle Featured Status*\n\n"
+        "⭐ = Currently featured ($100/month)\n"
+        "📋 = Basic listing (free)\n\n"
+        "Tap a restaurant to toggle:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
 # ── Callback handler ──────────────────────────────────────────────────────────
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -462,6 +519,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tg.id, text, parse_mode="Markdown", reply_markup=back_keyboard()
         )
 
+    elif data.startswith("toggle_feature_"):
+        if tg.id != ADMIN_ID:
+            return
+        rest_id = int(data.split("_")[2])
+        with get_db() as conn:
+            rest = conn.execute(
+                "SELECT * FROM restaurants WHERE id=?", (rest_id,)
+            ).fetchone()
+            if not rest:
+                await context.bot.send_message(tg.id, "Restaurant not found.")
+                return
+            new_status = 0 if rest["is_featured"] else 1
+            conn.execute(
+                "UPDATE restaurants SET is_featured=? WHERE id=?",
+                (new_status, rest_id)
+            )
+        status_text = "⭐ FEATURED" if new_status else "📋 Basic"
+        await context.bot.send_message(
+            tg.id,
+            f"✅ *{rest['name']}* is now *{status_text}*\n\n"
+            f"{'💰 Charge them $100/month!' if new_status else 'Listing downgraded to free.'}",
+            parse_mode="Markdown"
+        )
+
     elif data.startswith("adddeal_"):
         rest_id = int(data.split("_")[1])
         context.user_data["mode"] = "add_deal"
@@ -596,6 +677,7 @@ app.add_handler(CommandHandler("addrest",   cmd_addrest))
 app.add_handler(CommandHandler("adddeal",   cmd_adddeal))
 app.add_handler(CommandHandler("broadcast", cmd_broadcast))
 app.add_handler(CommandHandler("users",     cmd_users))
+app.add_handler(CommandHandler("feature",   cmd_feature))
 app.add_handler(CallbackQueryHandler(handle_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

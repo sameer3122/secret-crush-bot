@@ -298,6 +298,7 @@ async def cmd_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title="⭐ Secret Crush Premium",
         description="Unlimited confessions + anonymous replies for 30 days.",
         payload="premium_monthly",
+        provider_token="",
         currency="XTR",
         prices=[LabeledPrice("Premium – 30 days", PREMIUM_PRICE)],
     )
@@ -311,6 +312,7 @@ async def cmd_boost(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title="🚀 Confession Boost Pack",
         description="10 extra confession sends – never expire.",
         payload="boost_pack",
+        provider_token="",
         currency="XTR",
         prices=[LabeledPrice("Boost Pack – 10 sends", BOOST_PRICE)],
     )
@@ -460,6 +462,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title="⭐ Secret Crush Premium",
             description="Unlimited confessions + anonymous replies for 30 days.",
             payload="premium_monthly",
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice("Premium – 30 days", PREMIUM_PRICE)],
         )
@@ -470,6 +473,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title="🚀 Confession Boost Pack",
             description="10 extra confession sends – never expire.",
             payload="boost_pack",
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice("Boost Pack – 10 sends", BOOST_PRICE)],
         )
@@ -509,6 +513,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title="🔍 Reveal Anonymous Sender",
             description="Pay to find out who sent you this anonymous message.",
             payload=f"reveal_{confession_id}",
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice("Reveal Sender", REVEAL_PRICE)],
         )

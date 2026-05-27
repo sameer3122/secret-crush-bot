@@ -17,17 +17,16 @@ from telegram.ext import (
 TOKEN    = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# ── Pricing (Telegram Stars) ────────────────────────────────────────────────
-# 50 Stars ≈ $1 USD; creators cash out at ~$0.013/star
-# Target: ~230 000 stars/month → $3 000 USD
-REVEAL_PRICE  = 50    # stars – reveal who sent a confession
-PREMIUM_PRICE = 200   # stars – 30-day unlimited premium
-BOOST_PRICE   = 30    # stars – 10 extra sends (never expire)
-FREE_DAILY    = 3     # free confessions per day
+# ── Pricing (Telegram Stars) ─────────────────────────────────────────────────
+REVEAL_PRICE   = 50    # stars – reveal who sent/replied
+PREMIUM_PRICE  = 200   # stars – 30-day unlimited
+BOOST_PRICE    = 30    # stars – 10 extra sends
+FREE_DAILY     = 3     # free confessions per day
+REFERRAL_BONUS = 3     # bonus sends for inviting a friend
 
 DB_PATH = "bot.db"
 
-# ── Database ────────────────────────────────────────────────────────────────
+# ── Database ─────────────────────────────────────────────────────────────────
 
 @contextmanager
 def get_db():
@@ -63,6 +62,7 @@ def init_db():
                 sender_id    INTEGER,
                 recipient_id INTEGER,
                 message      TEXT,
+                parent_id    INTEGER DEFAULT NULL,
                 created_at   TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS payments (
@@ -73,6 +73,11 @@ def init_db():
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # migrate older DBs
+        try:
+            conn.execute("ALTER TABLE confessions ADD COLUMN parent_id INTEGER DEFAULT NULL")
+        except Exception:
+            pass
 
 
 def ensure_user(user_id: int, username: str = None,
@@ -87,6 +92,12 @@ def ensure_user(user_id: int, username: str = None,
                 " VALUES (?,?,?,?)",
                 (user_id, username, first_name, referred_by),
             )
+            # reward referrer
+            if referred_by and referred_by != user_id:
+                conn.execute(
+                    "UPDATE users SET extra_sends=extra_sends+? WHERE user_id=?",
+                    (REFERRAL_BONUS, referred_by),
+                )
             return True
     return False
 
@@ -153,12 +164,13 @@ def charge_send(user_id: int):
             )
 
 
-def save_confession(sender_id: int, recipient_id: int, message: str) -> int:
+def save_confession(sender_id: int, recipient_id: int,
+                    message: str, parent_id: int = None) -> int:
     with get_db() as conn:
         cur = conn.execute(
-            "INSERT INTO confessions (sender_id, recipient_id, message)"
-            " VALUES (?,?,?)",
-            (sender_id, recipient_id, message),
+            "INSERT INTO confessions (sender_id, recipient_id, message, parent_id)"
+            " VALUES (?,?,?,?)",
+            (sender_id, recipient_id, message, parent_id),
         )
         return cur.lastrowid
 
@@ -183,7 +195,14 @@ def log_payment(user_id: int, ptype: str, stars: int):
         )
 
 
-# ── Keyboards ────────────────────────────────────────────────────────────────
+def count_referrals(user_id: int) -> int:
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM users WHERE referred_by=?", (user_id,)
+        ).fetchone()[0]
+
+
+# ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def main_keyboard():
     return InlineKeyboardMarkup([
@@ -193,12 +212,21 @@ def main_keyboard():
     ])
 
 
-def reveal_keyboard(confession_id: int):
+def confession_keyboard(confession_id: int):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            f"🔍 Reveal Sender – {REVEAL_PRICE} ⭐",
-            callback_data=f"reveal_{confession_id}",
-        )]
+        [InlineKeyboardButton(f"🔍 Reveal Sender – {REVEAL_PRICE} ⭐",
+                              callback_data=f"reveal_{confession_id}")],
+        [InlineKeyboardButton("💬 Reply Anonymously",
+                              callback_data=f"reply_{confession_id}")],
+    ])
+
+
+def reply_keyboard(confession_id: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔍 Reveal who replied – {REVEAL_PRICE} ⭐",
+                              callback_data=f"reveal_{confession_id}")],
+        [InlineKeyboardButton("💬 Reply back",
+                              callback_data=f"reply_{confession_id}")],
     ])
 
 
@@ -221,25 +249,42 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
-    ensure_user(tg.id, tg.username, tg.first_name, referred_by)
+    is_new = ensure_user(tg.id, tg.username, tg.first_name, referred_by)
+
+    # notify referrer about bonus
+    if is_new and referred_by and referred_by != tg.id:
+        try:
+            await context.bot.send_message(
+                chat_id=referred_by,
+                text=f"🎉 Someone joined using your link!\n\n"
+                     f"You earned *+{REFERRAL_BONUS} free confession sends!* 🚀",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
 
     if referred_by and referred_by != tg.id:
         context.user_data["target"] = referred_by
         await update.message.reply_text(
             "💌 *Send your anonymous confession now.*\n\n"
-            "_Your identity stays hidden. The recipient can pay ⭐ to reveal you._",
+            "_Your identity stays hidden. The recipient can pay ⭐ to reveal you._\n"
+            "_They can also reply — and you can chat back and forth anonymously!_",
             parse_mode="Markdown",
         )
         return
 
     link = f"https://t.me/Secretcrushconfessionbot?start={tg.id}"
+    referrals = count_referrals(tg.id)
+
     await update.message.reply_text(
         f"👀 *Secret Crush Confession Bot*\n\n"
         f"Share your link to receive anonymous confessions:\n\n"
         f"`{link}`\n\n"
         f"🆓 Free: *{FREE_DAILY} confessions/day*\n"
-        f"⭐ Premium: *Unlimited confessions – 200 Stars/month*\n"
-        f"🔍 Reveal who confessed to you for *50 Stars*",
+        f"💬 *Anonymous back-and-forth replies*\n"
+        f"⭐ Premium: *Unlimited – 200 Stars/month*\n"
+        f"🔍 Reveal anyone for *50 Stars*\n"
+        f"👥 Referrals: *{referrals} friends invited* (+{REFERRAL_BONUS} sends each)",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
@@ -251,7 +296,7 @@ async def cmd_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_invoice(
         chat_id=tg.id,
         title="⭐ Secret Crush Premium",
-        description="Unlimited confessions + priority delivery for 30 days.",
+        description="Unlimited confessions + anonymous replies for 30 days.",
         payload="premium_monthly",
         currency="XTR",
         prices=[LabeledPrice("Premium – 30 days", PREMIUM_PRICE)],
@@ -276,21 +321,24 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(tg.id, tg.username, tg.first_name)
     reset_daily_if_needed(tg.id)
     u = fetch_user(tg.id)
-
-    premium_ok  = is_premium(u)
-    expiry_str  = u["premium_until"][:10] if u["premium_until"] else "—"
+    premium_ok = is_premium(u)
+    expiry_str = u["premium_until"][:10] if u["premium_until"] else "—"
+    referrals  = count_referrals(tg.id)
 
     with get_db() as conn:
         sent     = conn.execute("SELECT COUNT(*) FROM confessions WHERE sender_id=?",    (tg.id,)).fetchone()[0]
         received = conn.execute("SELECT COUNT(*) FROM confessions WHERE recipient_id=?", (tg.id,)).fetchone()[0]
 
+    link = f"https://t.me/Secretcrushconfessionbot?start={tg.id}"
     await update.message.reply_text(
         f"📊 *Your Stats*\n\n"
         f"Premium: {'✅ Active until ' + expiry_str if premium_ok else '❌ None'}\n"
         f"Extra sends: {u['extra_sends']}\n"
         f"Sends today: {u['sends_today']}/{FREE_DAILY} (free)\n"
         f"Total sent: {sent} | Received: {received}\n"
-        f"Stars spent: {u['stars_spent']} ⭐",
+        f"Stars spent: {u['stars_spent']} ⭐\n"
+        f"👥 Friends invited: {referrals} (+{referrals * REFERRAL_BONUS} bonus sends earned)\n\n"
+        f"🔗 Your link:\n`{link}`",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
@@ -300,19 +348,20 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     with get_db() as conn:
-        total_users    = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        premium_users  = conn.execute("SELECT COUNT(*) FROM users WHERE is_premium=1").fetchone()[0]
-        total_conf     = conn.execute("SELECT COUNT(*) FROM confessions").fetchone()[0]
-        total_stars    = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments").fetchone()[0]
-        rev_premium    = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments WHERE type='premium'").fetchone()[0]
-        rev_reveals    = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments WHERE type='reveal'").fetchone()[0]
-        rev_boost      = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments WHERE type='boost'").fetchone()[0]
+        total_users   = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        premium_users = conn.execute("SELECT COUNT(*) FROM users WHERE is_premium=1").fetchone()[0]
+        total_conf    = conn.execute("SELECT COUNT(*) FROM confessions WHERE parent_id IS NULL").fetchone()[0]
+        total_replies = conn.execute("SELECT COUNT(*) FROM confessions WHERE parent_id IS NOT NULL").fetchone()[0]
+        total_stars   = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments").fetchone()[0]
+        rev_premium   = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments WHERE type='premium'").fetchone()[0]
+        rev_reveals   = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments WHERE type='reveal'").fetchone()[0]
+        rev_boost     = conn.execute("SELECT COALESCE(SUM(stars),0) FROM payments WHERE type='boost'").fetchone()[0]
 
     usd = total_stars * 0.013
     await update.message.reply_text(
         f"📊 *Admin Dashboard*\n\n"
         f"👥 Users: {total_users}  |  ⭐ Premium: {premium_users}\n"
-        f"💌 Confessions sent: {total_conf}\n\n"
+        f"💌 Confessions: {total_conf}  |  💬 Replies: {total_replies}\n\n"
         f"💰 *Revenue*\n"
         f"Total: {total_stars} ⭐ ≈ ${usd:,.2f} USD\n"
         f"  Premium subs: {rev_premium} ⭐\n"
@@ -327,44 +376,74 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     ensure_user(tg.id, tg.username, tg.first_name)
-
-    if "target" not in context.user_data:
-        link = f"https://t.me/Secretcrushconfessionbot?start={tg.id}"
-        await update.message.reply_text(
-            f"Use a confession link to send a message, or share yours:\n`{link}`",
-            parse_mode="Markdown",
-        )
-        return
-
-    target_id = context.user_data["target"]
-
-    if not can_send(tg.id):
-        await update.message.reply_text(
-            f"⚠️ *Daily limit reached!*\n\n"
-            f"Free users get {FREE_DAILY} confessions/day.\n"
-            "Upgrade to send unlimited confessions! ⭐",
-            parse_mode="Markdown",
-            reply_markup=upgrade_keyboard(),
-        )
-        return
-
     message_text = update.message.text
-    confession_id = save_confession(tg.id, target_id, message_text)
-    charge_send(tg.id)
-    context.user_data.pop("target")
 
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=f"💌 *You received an anonymous confession:*\n\n_{message_text}_",
-            parse_mode="Markdown",
-            reply_markup=reveal_keyboard(confession_id),
-        )
-        await update.message.reply_text("✅ Confession sent anonymously!")
-    except Exception:
-        await update.message.reply_text(
-            "❌ Delivery failed – the recipient must start the bot first."
-        )
+    # ── Mode: sending a reply ──
+    if "reply_target" in context.user_data:
+        reply_target = context.user_data.pop("reply_target")
+        reply_parent = context.user_data.pop("reply_parent", None)
+
+        confession_id = save_confession(tg.id, reply_target, message_text, parent_id=reply_parent)
+
+        try:
+            await context.bot.send_message(
+                chat_id=reply_target,
+                text=f"💬 *Someone replied to your confession anonymously:*\n\n_{message_text}_",
+                parse_mode="Markdown",
+                reply_markup=reply_keyboard(confession_id),
+            )
+            await update.message.reply_text(
+                "✅ Reply sent anonymously!\n\n"
+                "_They can reply back and you can keep chatting — all anonymous._",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            await update.message.reply_text("❌ Could not deliver – the recipient must start the bot first.")
+        return
+
+    # ── Mode: sending a confession ──
+    if "target" in context.user_data:
+        target_id = context.user_data["target"]
+
+        if not can_send(tg.id):
+            await update.message.reply_text(
+                f"⚠️ *Daily limit reached!*\n\n"
+                f"Free users get {FREE_DAILY} confessions/day.\n"
+                "Upgrade to send unlimited confessions! ⭐",
+                parse_mode="Markdown",
+                reply_markup=upgrade_keyboard(),
+            )
+            return
+
+        confession_id = save_confession(tg.id, target_id, message_text)
+        charge_send(tg.id)
+        context.user_data.pop("target")
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"💌 *You received an anonymous confession:*\n\n_{message_text}_",
+                parse_mode="Markdown",
+                reply_markup=confession_keyboard(confession_id),
+            )
+            await update.message.reply_text(
+                "✅ Confession sent anonymously!\n\n"
+                "_The recipient can reply back anonymously too._",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            await update.message.reply_text(
+                "❌ Delivery failed – the recipient must start the bot first."
+            )
+        return
+
+    # ── No mode: show home ──
+    link = f"https://t.me/Secretcrushconfessionbot?start={tg.id}"
+    await update.message.reply_text(
+        f"Use a confession link to send a message, or share yours:\n`{link}`",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
 
 
 # ── Callback handler ──────────────────────────────────────────────────────────
@@ -379,7 +458,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_invoice(
             chat_id=tg.id,
             title="⭐ Secret Crush Premium",
-            description="Unlimited confessions + priority delivery for 30 days.",
+            description="Unlimited confessions + anonymous replies for 30 days.",
             payload="premium_monthly",
             currency="XTR",
             prices=[LabeledPrice("Premium – 30 days", PREMIUM_PRICE)],
@@ -395,16 +474,40 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prices=[LabeledPrice("Boost Pack – 10 sends", BOOST_PRICE)],
         )
 
+    elif data.startswith("reply_"):
+        confession_id = int(data.split("_", 1)[1])
+        confession = fetch_confession(confession_id)
+        if not confession:
+            await context.bot.send_message(tg.id, "Confession not found.")
+            return
+
+        # the person replying sends back to the original sender
+        reply_to_user = confession["sender_id"]
+        if confession["recipient_id"] == tg.id:
+            reply_to_user = confession["sender_id"]
+        else:
+            reply_to_user = confession["recipient_id"]
+
+        context.user_data["reply_target"] = reply_to_user
+        context.user_data["reply_parent"]  = confession_id
+
+        await context.bot.send_message(
+            chat_id=tg.id,
+            text="💬 *Type your anonymous reply now:*\n\n_Your identity stays hidden._",
+            parse_mode="Markdown",
+        )
+
     elif data.startswith("reveal_"):
         confession_id = int(data.split("_", 1)[1])
         confession = fetch_confession(confession_id)
-        if not confession or confession["recipient_id"] != tg.id:
-            await context.bot.send_message(tg.id, "This confession is not yours.")
+        if not confession:
+            await context.bot.send_message(tg.id, "Confession not found.")
             return
+        # reveal the sender to whoever is reading
         await context.bot.send_invoice(
             chat_id=tg.id,
-            title="🔍 Reveal Confession Sender",
-            description="Pay to find out who sent you this anonymous confession.",
+            title="🔍 Reveal Anonymous Sender",
+            description="Pay to find out who sent you this anonymous message.",
             payload=f"reveal_{confession_id}",
             currency="XTR",
             prices=[LabeledPrice("Reveal Sender", REVEAL_PRICE)],
@@ -415,6 +518,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u = fetch_user(tg.id)
         premium_ok = is_premium(u)
         expiry_str = u["premium_until"][:10] if u["premium_until"] else "—"
+        referrals  = count_referrals(tg.id)
         with get_db() as conn:
             sent     = conn.execute("SELECT COUNT(*) FROM confessions WHERE sender_id=?",    (tg.id,)).fetchone()[0]
             received = conn.execute("SELECT COUNT(*) FROM confessions WHERE recipient_id=?", (tg.id,)).fetchone()[0]
@@ -426,7 +530,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Extra sends: {u['extra_sends']}\n"
                 f"Sends today: {u['sends_today']}/{FREE_DAILY}\n"
                 f"Total sent: {sent} | Received: {received}\n"
-                f"Stars spent: {u['stars_spent']} ⭐"
+                f"Stars spent: {u['stars_spent']} ⭐\n"
+                f"👥 Friends invited: {referrals}"
             ),
             parse_mode="Markdown",
         )
@@ -453,7 +558,10 @@ async def payment_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         log_payment(tg.id, "premium", stars)
         await update.message.reply_text(
-            "🎉 *Premium activated!* Unlimited confessions for 30 days.\n\nThank you! ⭐",
+            "🎉 *Premium activated!*\n\n"
+            "✅ Unlimited confessions\n"
+            "✅ Unlimited anonymous replies\n"
+            "✅ Valid for 30 days\n\nThank you! ⭐",
             parse_mode="Markdown",
         )
 
@@ -473,7 +581,12 @@ async def payment_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confession    = fetch_confession(confession_id)
         log_payment(tg.id, "reveal", stars)
         if confession:
-            sender = fetch_user(confession["sender_id"])
+            # reveal whoever sent to this user
+            if confession["recipient_id"] == tg.id:
+                sender_id = confession["sender_id"]
+            else:
+                sender_id = confession["recipient_id"]
+            sender = fetch_user(sender_id)
             if sender:
                 name     = sender.get("first_name") or "Unknown"
                 username = f"@{sender['username']}" if sender.get("username") else "(no username)"
@@ -482,7 +595,7 @@ async def payment_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown",
                 )
             else:
-                await update.message.reply_text("Sender info not found (may have deleted their account).")
+                await update.message.reply_text("Sender info not found.")
         else:
             await update.message.reply_text("Confession not found.")
 

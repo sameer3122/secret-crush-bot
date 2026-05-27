@@ -18,11 +18,20 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 DB_PATH = "food_bot.db"
 
-AREAS = [
-    "Dubai Marina", "Downtown Dubai", "JLT",
-    "Deira", "Bur Dubai", "Business Bay",
-    "JBR", "Palm Jumeirah", "Al Barsha", "Sharjah"
-]
+COUNTRIES = ["🇦🇪 Dubai / UAE", "🇶🇦 Qatar / Doha"]
+
+AREAS = {
+    "🇦🇪 Dubai / UAE": [
+        "Dubai Marina", "Downtown Dubai", "JLT",
+        "Deira", "Bur Dubai", "Business Bay",
+        "JBR", "Palm Jumeirah", "Al Barsha", "Sharjah"
+    ],
+    "🇶🇦 Qatar / Doha": [
+        "The Pearl", "West Bay", "Lusail",
+        "Al Waab", "Msheireb", "Al Rayyan",
+        "Katara", "Souq Waqif", "Al Sadd", "Mesaieed"
+    ]
+}
 
 CUISINES = [
     "Arabic", "Indian", "Chinese", "Italian",
@@ -102,6 +111,19 @@ def _seed_sample_data(conn):
         ("Karachi Darbar", "Deira", "Pakistani",
          "Famous biryani and karahi since 1985", "+971 4 567 8901",
          "Deira City Centre area", 0),
+        # Qatar restaurants
+        ("Parisa Souq Waqif", "Souq Waqif", "Arabic",
+         "Traditional Qatari cuisine in heritage setting", "+974 4433 2211",
+         "Souq Waqif, Doha", 1),
+        ("Al Mourjan", "West Bay", "Lebanese",
+         "Fine dining with stunning Doha skyline views", "+974 4422 1100",
+         "West Bay Lagoon, Doha", 1),
+        ("Katara Beach Club", "Katara", "American",
+         "Burgers and grills by the beach", "+974 4408 8000",
+         "Katara Cultural Village, Doha", 0),
+        ("Spice Market Lusail", "Lusail", "Indian",
+         "Best biryani and curry in Lusail City", "+974 5512 3456",
+         "Lusail Marina, Doha", 0),
     ]
     for r in restaurants:
         conn.execute(
@@ -140,17 +162,18 @@ def ensure_user(user_id, username=None, first_name=None):
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔥 Today's Hot Deals", callback_data="all_deals")],
-        [InlineKeyboardButton("📍 Browse by Area", callback_data="by_area")],
+        [InlineKeyboardButton("🇦🇪 Dubai / UAE", callback_data="country_🇦🇪 Dubai / UAE"),
+         InlineKeyboardButton("🇶🇦 Qatar / Doha", callback_data="country_🇶🇦 Qatar / Doha")],
         [InlineKeyboardButton("🍽️ Browse by Cuisine", callback_data="by_cuisine")],
         [InlineKeyboardButton("⭐ Featured Restaurants", callback_data="featured")],
         [InlineKeyboardButton("📢 List Your Restaurant", callback_data="list_restaurant")],
     ])
 
 
-def areas_keyboard():
+def areas_keyboard(country):
     buttons = []
     row = []
-    for i, area in enumerate(AREAS):
+    for i, area in enumerate(AREAS.get(country, [])):
         row.append(InlineKeyboardButton(area, callback_data=f"area_{area}"))
         if len(row) == 2:
             buttons.append(row)
@@ -208,11 +231,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     greeting = f"Welcome back, *{tg.first_name}*! 👋" if not is_new else f"Welcome, *{tg.first_name}*! 🎉"
 
     await update.message.reply_text(
-        f"🍕 *Dubai Food Deals Bot*\n\n"
+        f"🍕 *Gulf Food Deals Bot*\n\n"
         f"{greeting}\n\n"
-        f"Discover the *best food deals* in Dubai!\n\n"
+        f"Discover the *best food deals* in Dubai & Qatar!\n\n"
+        f"🇦🇪 Dubai / UAE areas\n"
+        f"🇶🇦 Qatar / Doha areas\n"
         f"🔥 Hot deals updated daily\n"
-        f"📍 Browse by area\n"
         f"🍽️ Browse by cuisine\n"
         f"⭐ Featured restaurants\n\n"
         f"What are you looking for today?",
@@ -337,12 +361,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tg.id, text, parse_mode="Markdown", reply_markup=back_keyboard()
         )
 
-    elif data == "by_area":
+    elif data.startswith("country_"):
+        country = data.replace("country_", "")
         await context.bot.send_message(
             tg.id,
-            "📍 *Select your area:*",
+            f"📍 *Select your area in {country}:*",
             parse_mode="Markdown",
-            reply_markup=areas_keyboard(),
+            reply_markup=areas_keyboard(country),
         )
 
     elif data == "by_cuisine":
